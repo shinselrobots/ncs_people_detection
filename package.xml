@@ -1,0 +1,17 @@
+<package>
+  <name>ncs_people_detection</name>
+  <version>0.0.0</version>
+  <description>People Detector using the Movidius Neural Compute Stick SDK (ncsdk) </description>
+  <maintainer email="shinsel.robots@gmail.com">Dave Shinsel</maintainer>
+  <license>BSD</license>
+  <buildtool_depend>catkin</buildtool_depend>
+  <build_depend>rospy</build_depend>
+
+  <!-- 
+  <run_depend>cob_perception_msgs</run_depend>
+  -->
+  <run_depend>cv_bridge</run_depend>
+  <run_depend>sensor_msgs</run_depend>
+
+
+</package>

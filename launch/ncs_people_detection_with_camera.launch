@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+
+<launch>
+
+
+  <!-- launch cv capture  (use this with generic camera) -->
+  <node pkg="cv_camera" type="cv_camera_node" name="cv_camera" output="screen">
+    <param name="device_id" value="0"/>
+  </node>
+  
+  <!-- launch detector -->
+  <node name="ncs_people_detection_node" pkg="ncs_people_detection" type="ncs_people_detection.py" output="screen">
+
+    <!-- specify path to the detector -->
+    <param name="network_graph_path" type="string" 
+      value="$(find ncs_people_detection)/network_graphs/ssd_mobilenet_graph" />
+
+    <!-- load other params -->
+    <rosparam command="load" file="$(find ncs_people_detection)/launch/ncs_people_detection_params.yaml"/>
+
+  </node>
+
+
+
+</launch>
