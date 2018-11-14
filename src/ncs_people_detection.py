@@ -31,6 +31,9 @@ import time
 import csv
 import os
 
+from body_tracker_msgs.msg import BodyTracker
+from geometry_msgs.msg import PointStamped, Point, PoseStamped, Pose, Pose2D
+
 # labels AKA classes.  The class IDs returned are the indices into this list
 labels = ('background',
           'aeroplane', 'bicycle', 'bird', 'boat',
@@ -60,6 +63,9 @@ input_video_path = '.'
 cam = None 
 LIVE_CAMERA = True
 FRAMES_TO_SKIP = 0  # use to experiment with CPU load, etc.
+
+ASTRA_MINI_FOV_X =  1.047200   # (60 degrees horizontal)
+ASTRA_MINI_FOV_Y = -0.863938   # (49.5 degrees vertical)
 
 class PeopleDetectionNode(object):
     def __init__(self):
@@ -94,13 +100,16 @@ class PeopleDetectionNode(object):
         self._bridge = CvBridge()
         self.skip_frame_count = 0
 
-        # Advertise the result of Object Detector
+        # Advertise the result of Object Detector (COB format)
         self.pub_detections = rospy.Publisher('/object_detection/detections', \
             DetectionArray, queue_size=1)
-
-        # Advertise the result of Object Detector
+        # and the marked up image
         self.pub_detections_image = rospy.Publisher(\
             '/object_detection/detections_image', Image, queue_size=1)
+
+        # Advertise the BodyTracker message (same as Nuitrack node)
+        self.pub_body_tracker = rospy.Publisher('/body_tracker/position', \
+            BodyTracker, queue_size=1)
 
         # configure the NCS
         mvnc.SetGlobalOption(mvnc.GlobalOption.LOG_LEVEL, 2)
@@ -108,7 +117,7 @@ class PeopleDetectionNode(object):
         # Get a list of ALL the sticks that are plugged in
         devices = mvnc.EnumerateDevices()
         if len(devices) == 0:
-            print('No devices found')
+            rospy.logerr('*** No Movidius NCS devices found!  Exiting! ***')
             quit()
 
         # Pick the first stick to run the network
@@ -185,7 +194,10 @@ class PeopleDetectionNode(object):
         #         5: box right location within image as number between 0.0 and 1.0
         #         6: box bottom location within image as number between 0.0 and 1.0
 
+
         # Process results, drawing bounding boxes on image and creating ROS message parameters
+
+        # Initialize the COB Message
         msg = DetectionArray()
         msg.header = self.incoming_image_msg.header
 
@@ -226,7 +238,7 @@ class PeopleDetectionNode(object):
             bb_width = bb_right - bb_left
             bb_height = bb_bottom - bb_top
 
-            # Create the detection message
+            # Create the COB detection message
             detection = Detection()
             detection.header = self.incoming_image_msg.header
             detection.label = labels[class_id]
@@ -238,13 +250,37 @@ class PeopleDetectionNode(object):
             detection.mask.roi.width = bb_width
             detection.mask.roi.height = bb_height
 
+            # determine person top center
+            body_position_x = bb_left + (bb_width / 2)
+            body_position_y = bb_top
+            
+
+            # Create the Body Tracker message (same as the Nuitrack node uses)
+            body_tracker_msg = BodyTracker()
+            body_tracker_msg.body_id = -1
+            body_tracker_msg.tracking_status = 0
+            body_tracker_msg.gesture = -1 # no gesture
+
+            # ==============================================================
+            body_position_radians_x = ((body_position_x / float(source_image_width)) - 0.5) * ASTRA_MINI_FOV_X
+            body_position_radians_y = ((body_position_y / float(source_image_width)) - 0.5) * ASTRA_MINI_FOV_Y
+            body_tracker_msg.position2d.x = body_position_radians_x 
+            body_tracker_msg.position2d.y = body_position_radians_y 
+            body_tracker_msg.position3d.x = 0.0 # TODO
+            body_tracker_msg.position3d.y = 0.0
+            body_tracker_msg.position3d.z = 0.0
+            # ==============================================================
+
+
+            # publish Body Tracker message for each person separately        
+            self.pub_body_tracker.publish(body_tracker_msg)
+
             # Log object info
             rospy.loginfo("Found Object:  ID: " + str(class_id) + " Label: " \
             + labels[class_id] + " Confidence: " + str(percentage) + "%")
 
             rospy.loginfo("ROI:  x: " + str(bb_left) + " y: " + str(bb_top) + \
                 " w: " + str(bb_width) + " h: " + str(bb_height))
-
 
             # overlay boxes and labels on to the image
             self.overlay_on_image(self.cv_image, output[base_index:base_index + 7])
@@ -390,7 +426,7 @@ class PeopleDetectionNode(object):
                 self._bridge.cv2_to_imgmsg(\
                 self.cv_image, encoding="passthrough")
 
-            # Publish the messages
+            # Publish the COB messages
             self.pub_detections.publish(msg)
             self.pub_detections_image.publish(msg_im)
 

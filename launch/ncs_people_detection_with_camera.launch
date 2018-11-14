@@ -9,7 +9,7 @@
   </node>
   
   <!-- launch detector -->
-  <node name="ncs_people_detection_node" pkg="ncs_people_detection" type="ncs_people_detection.py" output="screen">
+  <node name="ncs_people_detection_node" pkg="ncs_people_detection" type="ncs_people_detection.py" required="true" output="screen">
 
     <!-- specify path to the detector -->
     <param name="network_graph_path" type="string" 
