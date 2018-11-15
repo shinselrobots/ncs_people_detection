@@ -89,13 +89,15 @@ class PeopleDetectionNode(object):
 
 
         # Get other parameters from YAML file
-        camera_topic  = rospy.get_param("~camera_topic", "/cv_camera/image_raw")
+        camera_rgb_topic  = rospy.get_param("~camera_rgb_topic", "/cv_camera/image_raw")
+        camera_depth_topic  = rospy.get_param("~camera_depth_topic", "")
         video_file_path = rospy.get_param("~video_file_path", "")
         self.show_cv_debug_window = False
         self.show_cv_debug_window = rospy.get_param("~show_cv_debug_window", False)
 
 
         self.incoming_image_msg = None
+        self.incoming_depth_msg = None
         self.cv_image = None
         self._bridge = CvBridge()
         self.skip_frame_count = 0
@@ -135,10 +137,31 @@ class PeopleDetectionNode(object):
 
         # open the camera or video file       
         if not video_file_path or video_file_path == "no" or video_file_path == "cam":
-            # Subscribe to the camera rgb message
-            self.sub_rgb = rospy.Subscriber(camera_topic,\
-                Image, self.rgb_callback, queue_size=1, buff_size=2**24)
-            rospy.loginfo('Subscribing to camera_topic: ' + camera_topic)
+
+            # Subscribe to the live video messages
+
+            if camera_depth_topic:
+                # When depth is specified, synchronize RGB and Depth frames
+                # warning!  if used, but no depth camera, RGB will never show up!
+
+                # Subscribe to approx synchronized rgb and depth frames
+                self.sub_rgb = message_filters.Subscriber(camera_rgb_topic, Image)
+                self.sub_depth = message_filters.Subscriber(camera_depth_topic, Image)
+
+                # Create the message filter
+                ts = message_filters.ApproximateTimeSynchronizer(\
+                    [sub_rgb, sub_depth], 2, 0.9)
+                ts.registerCallback(self.rgb_and_depth_callback)
+                rospy.loginfo('Subscribing to SYNCHRONIZED RGB: ' + \
+                camera_rgb_topic + " and Depth: " + camera_depth_topic)
+                
+            else:
+                # no depth topic, RGB only
+
+                self.sub_rgb = rospy.Subscriber(camera_rgb_topic,\
+                    Image, self.rgb_callback, queue_size=1, buff_size=2**24)
+                rospy.loginfo('Subscribing to camera_rgb_topic: ' + camera_rgb_topic)
+
         else:
             rospy.logwarn("READING FROM VIDEO FILE INSTEAD OF ROS MESSAGES")
             self.read_from_video(video_file_path)
@@ -201,6 +224,13 @@ class PeopleDetectionNode(object):
         msg = DetectionArray()
         msg.header = self.incoming_image_msg.header
 
+        # get depth message (if any)
+        cv_depth_image = None
+        if self.incoming_depth_msg:
+            # Convert image to numpy array
+            self.cv_depth_image = self._bridge.imgmsg_to_cv2(self.incoming_depth_msg, "passthrough")
+
+
         # number of boxes returned
         num_valid_boxes = int(output[0])
 
@@ -251,8 +281,9 @@ class PeopleDetectionNode(object):
             detection.mask.roi.height = bb_height
 
             # determine person top center
-            body_position_x = bb_left + (bb_width / 2)
-            body_position_y = bb_top
+            body_center_x = bb_left + (bb_width / 2)
+            body_center_y = bb_top + (bb_height / 2)
+            body_top_y = bb_top # for tracking head
             
 
             # Create the Body Tracker message (same as the Nuitrack node uses)
@@ -262,13 +293,34 @@ class PeopleDetectionNode(object):
             body_tracker_msg.gesture = -1 # no gesture
 
             # ==============================================================
-            body_position_radians_x = ((body_position_x / float(source_image_width)) - 0.5) * ASTRA_MINI_FOV_X
-            body_position_radians_y = ((body_position_y / float(source_image_width)) - 0.5) * ASTRA_MINI_FOV_Y
+            # convert to radians from center of camera
+            body_position_radians_x = ((body_center_x / float(source_image_width)) - 0.5) * ASTRA_MINI_FOV_X
+            body_position_radians_y = ((body_top_y / float(source_image_height)) - 0.5) * ASTRA_MINI_FOV_Y
             body_tracker_msg.position2d.x = body_position_radians_x 
             body_tracker_msg.position2d.y = body_position_radians_y 
-            body_tracker_msg.position3d.x = 0.0 # TODO
+
+            # 3d position relative to camera (need TF with servo position to get actual)
+            body_tracker_msg.position3d.x = 0.0
             body_tracker_msg.position3d.y = 0.0
             body_tracker_msg.position3d.z = 0.0
+
+            if cv_depth_image:
+                # find average depth of person
+
+                cv_depth_bounding_box = cv_depth[bb_top:bb_top+bb_height, \
+                    bb_left:bb_left+bb_width]
+                try:
+                    depth_mean = numpy.nanmedian(\
+                       cv_depth_bounding_box[numpy.nonzero(cv_depth_bounding_box)])
+
+                    body_tracker_msg.position3d.x = body_position_radians_x
+                    body_tracker_msg.position3d.y = body_position_radians_y
+                    body_tracker_msg.position3d.z = depth_mean*0.001
+
+                except Exception as e:
+                    print e
+
+
             # ==============================================================
 
 
@@ -391,6 +443,20 @@ class PeopleDetectionNode(object):
         Shuts down the node
         """
         rospy.signal_shutdown("See ya!")
+
+
+    def rgb_and_depth_callback(self, rgb_msg, depth_msg):
+        """
+        Callback for synchronized RGB and Depth frames
+        Allows distance to people to be determined 
+        """
+
+        # save the depth image
+        self.incoming_depth_msg = depth_msg
+
+        # call the rgb frame handler as usual
+        rgb_callback(rgb_msg)
+        
 
 
     def rgb_callback(self, data):
