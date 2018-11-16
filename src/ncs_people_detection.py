@@ -310,7 +310,6 @@ class PeopleDetectionNode(object):
                 body_tracker_msg.position2d.x = body_position_radians_x 
                 body_tracker_msg.position2d.y = body_position_radians_y 
 
-                # 3d position relative to camera (need TF with servo position to get actual)
                 body_tracker_msg.position3d.x = 0.0
                 body_tracker_msg.position3d.y = 0.0
                 body_tracker_msg.position3d.z = 0.0
@@ -325,9 +324,16 @@ class PeopleDetectionNode(object):
                         depth_mean = numpy.nanmedian(\
                            cv_depth_bounding_box[numpy.nonzero(cv_depth_bounding_box)])
 
-                        body_tracker_msg.position3d.x = body_position_radians_x
-                        body_tracker_msg.position3d.y = body_position_radians_y
-                        body_tracker_msg.position3d.z = depth_mean*0.001 # mm --> meters
+                        # Fill in body tracker message data 
+                        # camera z,x,y coordinates are mapped to ROS x,y,z coordinates 
+                        # All values are relative to camera position in meters (ie, in camera's TF frame)
+                        # ROS x = camera z - distance to person
+                        # ROS y = camera x - side to side
+                        # ROS z = camera y - vertical height, *relative to camera position*
+                        body_tracker_msg.position3d.x = depth_mean*0.001 # mm --> meters
+
+                        body_tracker_msg.position3d.y = body_position_radians_x
+                        body_tracker_msg.position3d.z = body_position_radians_y
 
                         #rospy.loginfo("DBG RAW Depth =  " + str(depth_mean))
 
