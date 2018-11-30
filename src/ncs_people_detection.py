@@ -21,9 +21,6 @@ from sensor_msgs.msg import Image
 from cv_bridge import CvBridge, CvBridgeError
 import message_filters
 
-#from cob_people_object_detection_tensorflow.detector import Detector
-#from cob_people_object_detection_tensorflow import utils
-#from body_tracker_msgs.msg import BodyTracker
 
 # for NCS SDK (shim from v1 to v2)
 sys.path.insert(0, "/home/system/sdk/ncappzoo/ncapi2_shim") 
@@ -36,6 +33,9 @@ import os
 
 from body_tracker_msgs.msg import BodyTracker
 from geometry_msgs.msg import PointStamped, Point, PoseStamped, Pose, Pose2D
+from body_tracker_msgs.msg import BodyTrackerArray
+
+
 
 # labels AKA classes.  The class IDs returned are the indices into this list
 labels = ('background',
@@ -115,6 +115,10 @@ class PeopleDetectionNode(object):
         # Advertise the BodyTracker message (same as Nuitrack node)
         self.pub_body_tracker = rospy.Publisher('/body_tracker/position', \
             BodyTracker, queue_size=1)
+
+        # Advertise the BodyTrackerArray message (same as Nuitrack node, but an array!)
+        self.pub_body_tracker_array = rospy.Publisher('/body_tracker_array/position', \
+            BodyTrackerArray, queue_size=1)
 
         # configure the NCS
         mvnc.SetGlobalOption(mvnc.GlobalOption.LOG_LEVEL, 2)
@@ -224,8 +228,14 @@ class PeopleDetectionNode(object):
         # Process results, drawing bounding boxes on image and creating ROS message parameters
 
         # Initialize the COB Message
-        msg = DetectionArray()
-        msg.header = self.incoming_image_msg.header
+        cob_msg = DetectionArray()
+        cob_msg.header = self.incoming_image_msg.header
+        
+        # Initialize the Body Tracker Array message
+        body_tracker_array_msg = BodyTrackerArray()
+        body_tracker_array_msg.header = self.incoming_image_msg.header
+
+        
 
         # get depth message (if any)
         cv_depth_image = None
@@ -263,6 +273,10 @@ class PeopleDetectionNode(object):
             if (percentage <= min_score_percent):
                 continue
 
+            if class_id != 15:
+                # Only send body tracker message if it is a Person!
+                continue
+
             # Calculate Bounding Box position from 0,0 (top left of image)
             source_image_width = self.cv_image.shape[1]
             source_image_height = self.cv_image.shape[0]
@@ -287,62 +301,58 @@ class PeopleDetectionNode(object):
             detection.mask.roi.height = bb_height
 
 
-            # Create and send Body Tracker message (same as the Nuitrack node uses)
-            if class_id == 15:
+            # create the body tracker message
+            body_tracker_msg = BodyTracker()
+            body_tracker_msg.body_id = -1
+            body_tracker_msg.tracking_status = 0
+            body_tracker_msg.gesture = -1 # no gesture
 
-                # Only send body tracker message if it is a Person!
+            # determine person top center
+            body_center_x = bb_left + (bb_width / 2)
+            body_center_y = bb_top + (bb_height / 2)
+            body_top_y = bb_top # for tracking head
+            
 
-                # determine person top center
-                body_center_x = bb_left + (bb_width / 2)
-                body_center_y = bb_top + (bb_height / 2)
-                body_top_y = bb_top # for tracking head
-                
-                # create the body tracker message
-                body_tracker_msg = BodyTracker()
-                body_tracker_msg.body_id = -1
-                body_tracker_msg.tracking_status = 0
-                body_tracker_msg.gesture = -1 # no gesture
+            # ==============================================================
+            # convert to radians from center of camera
+            body_position_radians_x = ((body_center_x / float(source_image_width)) - 0.5) * ASTRA_MINI_FOV_X
+            body_position_radians_y = ((body_top_y / float(source_image_height)) - 0.5) * ASTRA_MINI_FOV_Y
+            body_tracker_msg.position2d.x = body_position_radians_x 
+            body_tracker_msg.position2d.y = body_position_radians_y 
 
-                # ==============================================================
-                # convert to radians from center of camera
-                body_position_radians_x = ((body_center_x / float(source_image_width)) - 0.5) * ASTRA_MINI_FOV_X
-                body_position_radians_y = ((body_top_y / float(source_image_height)) - 0.5) * ASTRA_MINI_FOV_Y
-                body_tracker_msg.position2d.x = body_position_radians_x 
-                body_tracker_msg.position2d.y = body_position_radians_y 
+            body_tracker_msg.position3d.x = 0.0
+            body_tracker_msg.position3d.y = 0.0
+            body_tracker_msg.position3d.z = 0.0
 
-                body_tracker_msg.position3d.x = 0.0
-                body_tracker_msg.position3d.y = 0.0
-                body_tracker_msg.position3d.z = 0.0
+            if cv_depth_image_received:
+                # find average depth of person
+                #rospy.loginfo("DBG GOT cv_depth_image ")
 
-                if cv_depth_image_received:
-                    # find average depth of person
-                    #rospy.loginfo("DBG GOT cv_depth_image ")
+                cv_depth_bounding_box = cv_depth_image[bb_top:bb_top+bb_height, \
+                    bb_left:bb_left+bb_width]
+                try:
+                    depth_mean = numpy.nanmedian(\
+                       cv_depth_bounding_box[numpy.nonzero(cv_depth_bounding_box)])
 
-                    cv_depth_bounding_box = cv_depth_image[bb_top:bb_top+bb_height, \
-                        bb_left:bb_left+bb_width]
-                    try:
-                        depth_mean = numpy.nanmedian(\
-                           cv_depth_bounding_box[numpy.nonzero(cv_depth_bounding_box)])
+                    # Fill in body tracker message data 
+                    # camera z,x,y coordinates are mapped to ROS x,y,z coordinates 
+                    # All values are relative to camera position in meters (ie, in camera's TF frame)
+                    # ROS x = camera z - distance to person
+                    # ROS y = camera x - side to side
+                    # ROS z = camera y - vertical height, *relative to camera position*
+                    body_tracker_msg.position3d.x = depth_mean*0.001 # mm --> meters
 
-                        # Fill in body tracker message data 
-                        # camera z,x,y coordinates are mapped to ROS x,y,z coordinates 
-                        # All values are relative to camera position in meters (ie, in camera's TF frame)
-                        # ROS x = camera z - distance to person
-                        # ROS y = camera x - side to side
-                        # ROS z = camera y - vertical height, *relative to camera position*
-                        body_tracker_msg.position3d.x = depth_mean*0.001 # mm --> meters
+                    body_tracker_msg.position3d.y = body_position_radians_x
+                    body_tracker_msg.position3d.z = body_position_radians_y
 
-                        body_tracker_msg.position3d.y = body_position_radians_x
-                        body_tracker_msg.position3d.z = body_position_radians_y
+                    #rospy.loginfo("DBG RAW Depth =  " + str(depth_mean))
 
-                        #rospy.loginfo("DBG RAW Depth =  " + str(depth_mean))
+                except Exception as e:
+                    #print e
+                    rospy.logwarn("Error finding depth of person")
 
-                    except Exception as e:
-                        #print e
-                        rospy.logwarn("Error finding depth of person")
-
-                # publish Body Tracker message for each person separately        
-                self.pub_body_tracker.publish(body_tracker_msg)
+            # publish Body Tracker message for each person separately        
+            self.pub_body_tracker.publish(body_tracker_msg)
 
 
             # Log object info
@@ -355,9 +365,12 @@ class PeopleDetectionNode(object):
             # overlay boxes and labels on to the image
             self.overlay_on_image(self.cv_image, output[base_index:base_index + 7])
 
-            msg.detections.append(detection)
+            cob_msg.detections.append(detection)
+            body_tracker_array_msg.detected_list.append(body_tracker_msg)
+            
+            self.pub_body_tracker_array.publish(body_tracker_array_msg)
 
-        return (msg)
+        return (cob_msg)
 
 
     def overlay_on_image(self, display_image, object_info):
@@ -507,6 +520,7 @@ class PeopleDetectionNode(object):
                 self.cv_image, encoding="passthrough")
 
             # Publish the COB messages
+            #rospy.loginfo("DBG publishing detections ")
             self.pub_detections.publish(msg)
             self.pub_detections_image.publish(msg_im)
 
