@@ -368,7 +368,7 @@ class PeopleDetectionNode(object):
             cob_msg.detections.append(detection)
             body_tracker_array_msg.detected_list.append(body_tracker_msg)
             
-            self.pub_body_tracker_array.publish(body_tracker_array_msg)
+        self.pub_body_tracker_array.publish(body_tracker_array_msg)
 
         return (cob_msg)
 
